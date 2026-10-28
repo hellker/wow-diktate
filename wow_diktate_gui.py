@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
 )
 
 from wow_diktate import (
-    get_model, load_config, normalize_config, parse_channel, record,
+    get_model, load_config, normalize_config, normalize_language, parse_channel, record,
     save_config, transcribe, type_and_send,
 )
 
@@ -42,8 +42,15 @@ class DictationWorker(QThread):
         try:
             self.status.emit("loading model...")
             get_model(self.config["model"])
+            if self._stop.is_set():
+                self.result.emit("")
+                return
             self.status.emit("listening...")
             audio = record(self.config, self._stop)
+            if self._stop.is_set():
+                self.result.emit("")
+                return
+            self.status.emit("transcribing...")
             text = transcribe(audio, self.config) if audio is not None else ""
             prefix, msg = parse_channel(
                 text, self.config["channels"], self.config["default_channel"])
@@ -52,7 +59,10 @@ class DictationWorker(QThread):
                 return
             full = prefix + msg
             if not self.dry_run:
-                type_and_send(full)
+                self.status.emit("sending...")
+                if not type_and_send(full, self._stop):
+                    self.result.emit("")
+                    return
             self.result.emit(full)
         except Exception as e:
             # Never let an exception escape a QThread/slot: PyQt aborts the app.
@@ -180,11 +190,17 @@ class SettingsWindow(QMainWindow):
         self.setCentralWidget(w)
 
     def _save(self):
+        try:
+            language = normalize_language(self.language_combo.currentText())
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid language", str(e))
+            self.language_combo.setFocus()
+            return
         self.config["gain"] = self.gain_slider.value() / 10
         self.config["silence_threshold"] = self.threshold_spin.value()
         self.config["silence_chunks"] = self.chunks_spin.value()
         self.config["model"] = self.model_combo.currentText()
-        self.config["language"] = self.language_combo.currentText().strip().lower() or "en"
+        self.config["language"] = language
         self.config["default_channel"] = self.default_ch_edit.text()
 
         channels = {}
@@ -299,7 +315,8 @@ class WowDiktateApp:
     def _on_result(self, text):
         self.tray.setToolTip("WoW Diktate")
         if not text:
-            self.tray.showMessage("WoW Diktate", "No speech detected",
+            message = "Dictation cancelled" if self.worker._stop.is_set() else "No speech detected"
+            self.tray.showMessage("WoW Diktate", message,
                                   QSystemTrayIcon.MessageIcon.Information, 2000)
         elif self.worker.dry_run:
             self.tray.showMessage("WoW Diktate (test mode)", f"Would send: {text}",
