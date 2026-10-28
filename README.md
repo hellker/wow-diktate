@@ -34,6 +34,10 @@ No channel word → defaults to `/s `.
 
 ## Install
 
+## AppImage (Recommended)
+
+Get the latest form [Releases](https://github.com/hellker/wow-diktate/releases).
+
 ### Arch
 ```bash
 sudo pacman -S ydotool python
