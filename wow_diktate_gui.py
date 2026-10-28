@@ -1,146 +1,69 @@
 #!/usr/bin/env python3
 """wow-diktate GUI — PyQt6 tray icon + settings window."""
-import json
-import os
-import subprocess
+import argparse
+import copy
 import sys
-import time
+import threading
 
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QIcon, QPixmap, QPainter, QColor
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDoubleSpinBox,
-    QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QPushButton,
-    QSlider, QSpinBox, QSystemTrayIcon, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget, QMenu,
+    QApplication, QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QLineEdit,
+    QMainWindow, QMenu, QMessageBox, QPushButton, QSlider, QSpinBox,
+    QSystemTrayIcon, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-CONFIG_PATH = os.path.expanduser("~/.config/wow-diktate/config.json")
-DEFAULTS = {
-    "gain": 3.0,
-    "silence_threshold": 0.005,
-    "silence_chunks": 15,
-    "min_duration": 1.5,
-    "min_amplitude": 0.05,
-    "model": "small",
-    "default_channel": "/s ",
-    "channels": {
-        "say": "/s ",
-        "party": "/p ",
-        "raid": "/ra ",
-        "guild": "/g ",
-        "officer": "/o ",
-        "yell": "/y ",
-        "instance": "/i ",
-        "whisper": "/w ",
-        "reply": "/r ",
-    },
-}
+from wow_diktate import (
+    get_model, load_config, normalize_config, parse_channel, record,
+    save_config, transcribe, type_and_send,
+)
 
-
-def load_config():
-    if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH) as f:
-            return {**DEFAULTS, **json.load(f)}
-    return dict(DEFAULTS)
-
-
-def save_config(cfg):
-    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, indent=2)
+MODEL_SIZES = ["tiny", "base", "small", "medium", "large-v3"]
 
 
 class DictationWorker(QThread):
-    finished = pyqtSignal(str)
+    # Not called "finished": that would shadow QThread's own finished signal.
+    status = pyqtSignal(str)
+    result = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, config):
+    def __init__(self, config, dry_run):
         super().__init__()
         self.config = config
+        self.dry_run = dry_run
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
 
     def run(self):
         try:
-            from faster_whisper import WhisperModel
-            import sounddevice as sd
-            import numpy as np
-
-            model_size = self.config["model"]
-            model = WhisperModel(model_size, device="cpu", compute_type="int8")
-
-            frames = []
-            started = False
-            silence_count = 0
-            threshold = self.config["silence_threshold"]
-            silence_chunks = self.config["silence_chunks"]
-
-            with sd.InputStream(samplerate=16000, channels=1, dtype="float32",
-                                blocksize=1600) as stream:
-                for _ in range(100):
-                    data, _ = stream.read(1600)
-                    level = np.abs(data).mean()
-                    frames.append(data)
-                    if not started:
-                        if level > threshold:
-                            started = True
-                    else:
-                        if level < threshold:
-                            silence_count += 1
-                            if silence_count >= silence_chunks:
-                                break
-                        else:
-                            silence_count = 0
-
-            if not started:
-                self.finished.emit("")
+            self.status.emit("loading model...")
+            get_model(self.config["model"])
+            self.status.emit("listening...")
+            audio = record(self.config, self._stop)
+            text = transcribe(audio, self.config) if audio is not None else ""
+            prefix, msg = parse_channel(
+                text, self.config["channels"], self.config["default_channel"])
+            if not msg.strip() or self._stop.is_set():
+                self.result.emit("")
                 return
-
-            start_idx = 0
-            for i, f in enumerate(frames):
-                if np.abs(f).mean() > threshold:
-                    start_idx = max(0, i - 2)
-                    break
-
-            audio = np.concatenate(frames[start_idx:])
-            audio = audio.flatten()
-            gain = self.config["gain"]
-            audio = np.clip(audio * gain, -1.0, 1.0)
-
-            duration = len(audio) / 16000
-            amplitude = np.abs(audio).max()
-            if duration < self.config["min_duration"] or amplitude < self.config["min_amplitude"]:
-                self.finished.emit("")
-                return
-
-            segments, _ = model.transcribe(audio, language="en",
-                initial_prompt="World of Warcraft chat. Channels: say, party, raid, guild, officer, yell, instance, whisper. Short phrases: gg, brb, afk, pull, ready, on cooldown.")
-            text = " ".join(s.text.strip() for s in segments)
-
-            channels = self.config["channels"]
-            default_ch = self.config["default_channel"]
-            words = text.split(None, 1)
-            if words and words[0].lower().rstrip(".,:") in channels:
-                prefix = channels[words[0].lower().rstrip(".,:")]
-                msg = words[1] if len(words) > 1 else ""
-            else:
-                prefix = default_ch
-                msg = text
-
             full = prefix + msg
-            self.finished.emit(full)
-
+            if not self.dry_run:
+                type_and_send(full)
+            self.result.emit(full)
         except Exception as e:
+            # Never let an exception escape a QThread/slot: PyQt aborts the app.
             self.error.emit(str(e))
 
 
 class SettingsWindow(QMainWindow):
     def __init__(self, config, on_save):
         super().__init__()
-        self.config = config
+        self.config = copy.deepcopy(config)  # edit a copy until Save
         self.on_save = on_save
         self.setWindowTitle("WoW Diktate Settings")
-        self.setFixedSize(420, 520)
+        self.resize(420, 520)
         self._build_ui()
 
     def _build_ui(self):
@@ -166,6 +89,8 @@ class SettingsWindow(QMainWindow):
         row = QHBoxLayout()
         row.addWidget(QLabel("Silence threshold:"))
         self.threshold_spin = QDoubleSpinBox()
+        # Default is 2 decimals, which would silently round 0.005 to 0.01.
+        self.threshold_spin.setDecimals(3)
         self.threshold_spin.setRange(0.001, 0.1)
         self.threshold_spin.setSingleStep(0.001)
         self.threshold_spin.setValue(self.config["silence_threshold"])
@@ -188,7 +113,10 @@ class SettingsWindow(QMainWindow):
         row = QHBoxLayout()
         row.addWidget(QLabel("Size:"))
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["tiny", "base", "small", "medium", "large-v3"])
+        self.model_combo.addItems(MODEL_SIZES)
+        if self.config["model"] not in MODEL_SIZES:
+            # Keep a hand-edited model instead of silently switching to "tiny".
+            self.model_combo.addItem(self.config["model"])
         self.model_combo.setCurrentText(self.config["model"])
         row.addWidget(self.model_combo)
         row.addStretch()
@@ -205,7 +133,6 @@ class SettingsWindow(QMainWindow):
         layout.addLayout(row)
 
         self.channel_table = QTableWidget(0, 2)
-        self.channel_table.itemChanged.connect(self._on_cell_changed)
         self.channel_table.setHorizontalHeaderLabels(["Word", "Prefix"])
         self.channel_table.horizontalHeader().setStretchLastSection(True)
         self.channel_table.setColumnWidth(0, 100)
@@ -222,7 +149,7 @@ class SettingsWindow(QMainWindow):
         add_btn = QPushButton("+")
         add_btn.setFixedWidth(36)
         add_btn.clicked.connect(self._add_channel)
-        rem_btn = QPushButton("\u2212")
+        rem_btn = QPushButton("−")
         rem_btn.setFixedWidth(36)
         rem_btn.clicked.connect(self._remove_channel)
         btn_row2.addWidget(add_btn)
@@ -251,20 +178,18 @@ class SettingsWindow(QMainWindow):
         for r in range(self.channel_table.rowCount()):
             w = self.channel_table.item(r, 0)
             p = self.channel_table.item(r, 1)
-            if w and p and w.text().strip():
-                channels[w.text().strip()] = p.text().strip() + " "
+            if w and p:
+                channels[w.text()] = p.text()
         self.config["channels"] = channels
+        normalize_config(self.config)
 
         try:
             save_config(self.config)
-        except Exception as e:
+        except OSError as e:
             QMessageBox.critical(self, "Save Error", str(e))
             return
         self.on_save(self.config)
         self.close()
-
-    def _on_cell_changed(self, item):
-        pass
 
     def _add_channel(self):
         r = self.channel_table.rowCount()
@@ -280,10 +205,16 @@ class SettingsWindow(QMainWindow):
 
 
 class WowDiktateApp:
-    def __init__(self):
+    def __init__(self, argv, dry_run=False):
         self.config = load_config()
-        self.app = QApplication(sys.argv)
+        self.app = QApplication(argv)
         self.app.setQuitOnLastWindowClosed(False)
+
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            QMessageBox.critical(None, "WoW Diktate",
+                                 "No system tray found. This GUI needs a tray "
+                                 "(on GNOME, install the AppIndicator extension).")
+            sys.exit(1)
 
         icon = self._make_icon()
         self.tray = QSystemTrayIcon(icon)
@@ -291,24 +222,29 @@ class WowDiktateApp:
 
         self.toggle_action = QAction("Dictate", self.app)
         self.toggle_action.triggered.connect(self._toggle)
+        self.dry_run_action = QAction("Test mode (don't type)", self.app)
+        self.dry_run_action.setCheckable(True)
+        self.dry_run_action.setChecked(dry_run)
         self.settings_action = QAction("Settings", self.app)
         self.settings_action.triggered.connect(self._open_settings)
         self.quit_action = QAction("Quit", self.app)
         self.quit_action.triggered.connect(self._quit)
 
-        menu = QMenu()
-        self.tray.setContextMenu(menu)
-        menu.addAction(self.toggle_action)
-        menu.addSeparator()
-        menu.addAction(self.settings_action)
-        menu.addSeparator()
-        menu.addAction(self.quit_action)
+        # Keep a reference: the tray does not take ownership of the menu.
+        self.menu = QMenu()
+        self.menu.addAction(self.toggle_action)
+        self.menu.addAction(self.dry_run_action)
+        self.menu.addSeparator()
+        self.menu.addAction(self.settings_action)
+        self.menu.addSeparator()
+        self.menu.addAction(self.quit_action)
+        self.tray.setContextMenu(self.menu)
 
         self.tray.activated.connect(self._tray_activated)
         self.tray.show()
 
         self.worker = None
-        self.listening = False
+        self.settings_win = None
 
     def _make_icon(self):
         pixmap = QPixmap(64, 64)
@@ -330,54 +266,66 @@ class WowDiktateApp:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self._toggle()
 
+    def _busy(self):
+        return self.worker is not None and self.worker.isRunning()
+
     def _toggle(self):
-        if self.listening:
-            if self.worker and self.worker.isRunning():
-                self.worker.wait(5000)
-            self.listening = False
-            self.tray.setToolTip("WoW Diktate (stopped)")
-        else:
-            self.listening = True
-            self.tray.setToolTip("WoW Diktate (listening...)")
-            self.worker = DictationWorker(self.config)
-            self.worker.finished.connect(self._on_result)
-            self.worker.error.connect(self._on_error)
-            self.worker.start()
+        if self._busy():
+            # Ask the worker to stop; it reports back through result/error.
+            self.worker.stop()
+            self.tray.setToolTip("WoW Diktate (stopping...)")
+            return
+        self.worker = DictationWorker(copy.deepcopy(self.config),
+                                      self.dry_run_action.isChecked())
+        self.worker.status.connect(
+            lambda s: self.tray.setToolTip(f"WoW Diktate ({s})"))
+        self.worker.result.connect(self._on_result)
+        self.worker.error.connect(self._on_error)
+        self.worker.start()
 
     def _on_result(self, text):
-        self.listening = False
         self.tray.setToolTip("WoW Diktate")
-        if text:
-            subprocess.run(["ydotool", "key", "enter"])
-            time.sleep(0.1)
-            subprocess.run(["ydotool", "type", "--", text])
-            time.sleep(0.1)
-            subprocess.run(["ydotool", "key", "enter"])
-            self.tray.showMessage("WoW Diktate", f"Sent: {text}",
-                                   QSystemTrayIcon.MessageIcon.Information, 3000)
-        else:
+        if not text:
             self.tray.showMessage("WoW Diktate", "No speech detected",
-                                   QSystemTrayIcon.MessageIcon.Information, 2000)
+                                  QSystemTrayIcon.MessageIcon.Information, 2000)
+        elif self.worker.dry_run:
+            self.tray.showMessage("WoW Diktate (test mode)", f"Would send: {text}",
+                                  QSystemTrayIcon.MessageIcon.Information, 5000)
+        else:
+            self.tray.showMessage("WoW Diktate", f"Sent: {text}",
+                                  QSystemTrayIcon.MessageIcon.Information, 3000)
 
     def _on_error(self, err):
-        self.listening = False
+        print(f"wow-diktate error: {err}", file=sys.stderr)
         self.tray.setToolTip("WoW Diktate")
         self.tray.showMessage("WoW Diktate Error", err[:200],
-                               QSystemTrayIcon.MessageIcon.Critical, 5000)
+                              QSystemTrayIcon.MessageIcon.Critical, 5000)
 
     def _open_settings(self):
-        win = SettingsWindow(self.config, self._config_saved)
-        win.show()
+        if self.settings_win is None or not self.settings_win.isVisible():
+            self.settings_win = SettingsWindow(self.config, self._config_saved)
+        self.settings_win.show()
+        self.settings_win.raise_()
+        self.settings_win.activateWindow()
 
     def _config_saved(self, cfg):
         self.config = cfg
 
     def _quit(self):
-        if self.worker and self.worker.isRunning():
+        if self._busy():
+            self.worker.stop()
             self.worker.wait(5000)
         self.app.quit()
 
 
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--dry-run", action="store_true",
+                        help="start in test mode: show the message instead of typing it")
+    args, qt_args = parser.parse_known_args()
+    app = WowDiktateApp([sys.argv[0], *qt_args], dry_run=args.dry_run)
+    return app.app.exec()
+
+
 if __name__ == "__main__":
-    app = WowDiktateApp()
-    sys.exit(app.app.exec())
+    sys.exit(main())
