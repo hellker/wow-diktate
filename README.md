@@ -114,6 +114,7 @@ Settings window edits it; you can also edit it by hand:
 - `default_channel`, `channels` — channel words and their prefixes
 
 ## Credits
+- [Decktation](https://github.com/silverfoxy/decktation) — inspiration for bringing voice dictation to all Linux distros (originally SteamOS/Steam Deck only)
 - [faster-whisper](https://github.com/SYSTRAN/faster-whisper) — speech recognition
 - [Whisper](https://github.com/openai/whisper) — model architecture
 - [ydotool](https://github.com/ReimuNotMoe/ydotool) — input injection
