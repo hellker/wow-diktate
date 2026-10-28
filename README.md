@@ -34,6 +34,17 @@ No channel word → defaults to `/s `.
 
 ## Install
 
-### Arch / CachyOS
+### Arch
 ```bash
 sudo pacman -S ydotool python
+
+Debian / Ubuntu
+```bash
+sudo apt install ydotool libportaudio2 python3
+
+Fedora
+```bash
+sudo dnf install portaudio python3
+# ydotool (not in repos — build from source):
+git clone https://github.com/ReimuNotMoe/ydotool && cd ydotool && make && sudo make install
+sudo systemctl enable --now ydotool   
