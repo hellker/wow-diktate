@@ -2,6 +2,7 @@
 """wow-diktate GUI — PyQt6 tray icon + settings window."""
 import argparse
 import copy
+import logging
 import sys
 import threading
 
@@ -19,6 +20,7 @@ from wow_diktate import (
 )
 
 MODEL_SIZES = ["tiny", "base", "small", "medium", "large-v3"]
+LANGUAGES = ["auto", "en", "pt", "es", "de", "fr", "ru"]
 
 
 class DictationWorker(QThread):
@@ -122,6 +124,16 @@ class SettingsWindow(QMainWindow):
         row.addStretch()
         layout.addLayout(row)
 
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Language you speak:"))
+        self.language_combo = QComboBox()
+        self.language_combo.setEditable(True)  # any Whisper language code works
+        self.language_combo.addItems(LANGUAGES)
+        self.language_combo.setCurrentText(self.config["language"])
+        row.addWidget(self.language_combo)
+        row.addStretch()
+        layout.addLayout(row)
+
         # --- Channel section ---
         layout.addWidget(QLabel("<b>Channels</b>"))
 
@@ -172,6 +184,7 @@ class SettingsWindow(QMainWindow):
         self.config["silence_threshold"] = self.threshold_spin.value()
         self.config["silence_chunks"] = self.chunks_spin.value()
         self.config["model"] = self.model_combo.currentText()
+        self.config["language"] = self.language_combo.currentText().strip().lower() or "en"
         self.config["default_channel"] = self.default_ch_edit.text()
 
         channels = {}
@@ -322,7 +335,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dry-run", action="store_true",
                         help="start in test mode: show the message instead of typing it")
+    parser.add_argument("--verbose", action="store_true",
+                        help="print timings and ydotool details to the terminal")
     args, qt_args = parser.parse_known_args()
+    if args.verbose:
+        logging.basicConfig(format="wow-diktate: %(message)s")
+        logging.getLogger("wow_diktate").setLevel(logging.INFO)
     app = WowDiktateApp([sys.argv[0], *qt_args], dry_run=args.dry_run)
     return app.app.exec()
 

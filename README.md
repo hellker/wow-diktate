@@ -97,6 +97,8 @@ The game is not needed — `ydotool` types into whatever window has focus.
   `venv/bin/python3 wow_diktate.py --dry-run` and say "party pull boss" → prints `/p pull boss`
 - **Without a mic**: `venv/bin/python3 wow_diktate.py --dry-run --file phrase.wav`
 - **Tray app**: `venv/bin/python3 wow_diktate_gui.py --dry-run`
+- **Timings / ydotool details**: start the tray app (or the AppImage) from a terminal with
+  `--verbose` to see how long each step takes and which Enter key ydotool uses.
 - **Real typing**: open a text editor (e.g. Kate), start dictation with the hotkey, keep the
   editor focused and speak. You should get an empty line (the "open chat" Enter),
   `/p pull boss`, and a new line (the "send" Enter).
@@ -111,6 +113,8 @@ Settings window edits it; you can also edit it by hand:
 - `silence_chunks` — how long (× 0.1 s) to wait after a pause before stopping
 - `min_duration` / `min_amplitude` — filters to reject noise/hallucinations
 - `model` — Whisper model size (`tiny` … `large-v3`; bigger = better but slower)
+- `language` — the language you speak (`en`, `pt`, `es`, …, or `auto`). Whisper
+  *translates* speech that doesn't match it, so set this to e.g. `pt` to get Portuguese chat
 - `default_channel`, `channels` — channel words and their prefixes
 
 ## Credits

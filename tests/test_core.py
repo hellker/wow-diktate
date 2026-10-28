@@ -92,6 +92,61 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(cfg["channels"], {"party": "/p ", "raid": "/ra "})
 
 
+class GetModelTest(unittest.TestCase):
+    def setUp(self):
+        wd.get_model.cache_clear()
+        self.addCleanup(wd.get_model.cache_clear)
+
+    def load(self, whisper_model):
+        fake_module = mock.Mock(WhisperModel=whisper_model)
+        with mock.patch.dict(sys.modules, {"faster_whisper": fake_module}):
+            return wd.get_model("small")
+
+    def test_cached_model_loads_without_network(self):
+        whisper_model = mock.Mock(return_value="model")
+        self.assertEqual(self.load(whisper_model), "model")
+        whisper_model.assert_called_once_with(
+            "small", device="cpu", compute_type="int8", local_files_only=True)
+
+    def test_downloads_when_not_cached(self):
+        whisper_model = mock.Mock(side_effect=[FileNotFoundError("not cached"), "model"])
+        self.assertEqual(self.load(whisper_model), "model")
+        self.assertNotIn("local_files_only", whisper_model.call_args.kwargs)
+
+
+class FakeModel:
+    def __init__(self, text):
+        self.text = text
+        self.kwargs = None
+
+    def transcribe(self, audio, **kwargs):
+        self.kwargs = kwargs
+        segment = mock.Mock(text=self.text)
+        return iter([segment]), mock.Mock(language=kwargs["language"] or "pt")
+
+
+class TranscribeTest(unittest.TestCase):
+    def transcribe(self, language, text="Party, vamos puxar o boss"):
+        model = FakeModel(text)
+        cfg = dict(wd.DEFAULTS, language=language)
+        with mock.patch.object(wd, "get_model", return_value=model):
+            result = wd.transcribe("audio", cfg)
+        return result, model.kwargs["language"]
+
+    def test_default_language_is_english(self):
+        self.assertEqual(wd.DEFAULTS["language"], "en")
+
+    def test_configured_language_is_passed_to_whisper(self):
+        # Forcing "en" on Portuguese speech makes Whisper translate it.
+        self.assertEqual(self.transcribe("pt"), ("Party, vamos puxar o boss", "pt"))
+
+    def test_auto_lets_whisper_detect_the_language(self):
+        self.assertEqual(self.transcribe("auto")[1], None)
+
+    def test_hallucinations_still_rejected(self):
+        self.assertEqual(self.transcribe("en", "Thanks for watching!")[0], "")
+
+
 def completed(stdout="", returncode=0):
     return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr="")
 

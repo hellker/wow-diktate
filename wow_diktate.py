@@ -36,6 +36,8 @@ DEFAULTS = {
     "min_duration": 1.5,          # seconds; shorter recordings are dropped
     "min_amplitude": 0.05,        # peak level; quieter recordings are dropped
     "model": "small",
+    "language": "en",             # spoken language ("pt", "es", ...) or "auto";
+                                  # Whisper translates speech that doesn't match it
     "default_channel": "/s ",
     "channels": {
         "say": "/s ", "party": "/p ", "raid": "/ra ",
@@ -108,7 +110,16 @@ def save_config(cfg, path=CONFIG_PATH):
 def get_model(size):
     """Load the Whisper model once and reuse it (loading takes seconds)."""
     from faster_whisper import WhisperModel  # heavy import, only when needed
-    return WhisperModel(size, device="cpu", compute_type="int8")
+    start = time.monotonic()
+    try:
+        # Use the downloaded copy without asking HuggingFace for updates first,
+        # which costs a network round-trip (or a long timeout when offline).
+        model = WhisperModel(size, device="cpu", compute_type="int8", local_files_only=True)
+    except FileNotFoundError:
+        log.info("downloading model %s (first run only)...", size)
+        model = WhisperModel(size, device="cpu", compute_type="int8")
+    log.info("model %s loaded in %.1fs", size, time.monotonic() - start)
+    return model
 
 
 def record(cfg, stop_event=None):
@@ -169,9 +180,12 @@ def is_hallucination(text):
 
 def transcribe(audio, cfg):
     """Transcribe audio (numpy array or file path); '' if it was a hallucination."""
-    segments, _ = get_model(cfg["model"]).transcribe(
-        audio, language="en", initial_prompt=INITIAL_PROMPT)
+    language = None if cfg["language"] == "auto" else cfg["language"]
+    start = time.monotonic()
+    segments, info = get_model(cfg["model"]).transcribe(
+        audio, language=language, initial_prompt=INITIAL_PROMPT)
     text = " ".join(s.text.strip() for s in segments).strip()
+    log.info("transcribed in %.1fs (language: %s)", time.monotonic() - start, info.language)
     if is_hallucination(text):
         log.info('hallucination rejected: "%s"', text)
         return ""
@@ -207,16 +221,19 @@ def _enter_key():
     silently ignores names like "enter"; old 0.1.x builds only take names.
     """
     _, help_text = _run_ydotool("key", "--help")
-    if "keycode" in help_text.lower():
-        return ("28:1", "28:0")  # KEY_ENTER down, up
-    return ("enter",)
+    keys = ("28:1", "28:0") if "keycode" in help_text.lower() else ("enter",)  # 28 = KEY_ENTER
+    log.info("ydotool Enter: key %s (help starts with %r)",
+             " ".join(keys), help_text.splitlines()[0] if help_text else "")
+    return keys
 
 
 def type_and_send(text):
     """Open the chat (Enter), type the message and send it (Enter)."""
     enter = ("key", *_enter_key())
     for args in (enter, ("type", "--", text), enter):
+        start = time.monotonic()
         code, output = _run_ydotool(*args)
+        log.info("ydotool %s took %.2fs", args[0], time.monotonic() - start)
         if code != 0:
             raise RuntimeError(f"ydotool {args[0]} failed ({code}): {output}")
         time.sleep(0.1)  # give the game time to open the chat box
@@ -231,6 +248,7 @@ def main():
     parser.add_argument("--file", metavar="AUDIO",
                         help="transcribe an audio file instead of the microphone")
     parser.add_argument("--model", help="Whisper model size (overrides config)")
+    parser.add_argument("--language", help='spoken language, e.g. "pt", or "auto" (overrides config)')
     args = parser.parse_args()
 
     logging.basicConfig(format="  (%(message)s)")
@@ -238,6 +256,8 @@ def main():
     cfg = load_config()
     if args.model:
         cfg["model"] = args.model
+    if args.language:
+        cfg["language"] = args.language
 
     get_model(cfg["model"])  # load before listening so no speech is lost
     if args.file:
