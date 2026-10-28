@@ -1,11 +1,13 @@
 #!/bin/bash
-PIDFILE=/tmp/wow_diktate.pid
-if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
-    kill "$(cat $PIDFILE)"
+# Bind this to a hotkey: first press starts listening, second press cancels.
+DIR="$(dirname "$(readlink -f "$0")")"
+PIDFILE="${XDG_RUNTIME_DIR:-/tmp}/wow_diktate.pid"
+LOGFILE="${XDG_RUNTIME_DIR:-/tmp}/wow_diktate.log"
+
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+    kill "$(cat "$PIDFILE")"
     rm -f "$PIDFILE"
 else
-    pkill -f "wow_diktate.py" 2>/dev/null
-    sleep 0.5
-    ~/wow-diktate-venv/bin/python3 ~/wow_diktate.py > /dev/null 2>&1 &
+    "$DIR/venv/bin/python3" "$DIR/wow_diktate.py" "$@" > "$LOGFILE" 2>&1 &
     echo $! > "$PIDFILE"
 fi
