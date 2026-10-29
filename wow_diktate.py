@@ -107,7 +107,7 @@ def load_config(path=CONFIG_PATH):
     except (OSError, ValueError) as e:
         log.warning("ignoring unreadable config %s: %s", path, e)
     try:
-        cfg["language"] = normalize_language(cfg["language"])
+        return normalize_config(cfg)
     except ValueError as e:
         log.warning("%s Using the default language %s.", e, DEFAULTS["language"])
         cfg["language"] = DEFAULTS["language"]

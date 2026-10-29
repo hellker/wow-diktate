@@ -12,7 +12,7 @@ import threading
 import urllib.request
 
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
+from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMenu, QMessageBox, QPushButton, QSlider, QSpinBox,
@@ -26,7 +26,7 @@ from wow_diktate import (
 
 MODEL_SIZES = ["tiny", "base", "small", "medium", "large-v3"]
 LANGUAGES = ["auto", "en", "pt", "es", "de", "fr", "ru"]
-CURRENT_VERSION = "0.1.7"
+CURRENT_VERSION = "0.2.0"
 GITHUB_API = "https://api.github.com/repos/hellker/wow-diktate/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/hellker/wow-diktate/releases"
 
