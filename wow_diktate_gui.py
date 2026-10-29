@@ -2,12 +2,14 @@
 """wow-diktate GUI — PyQt6 tray icon + settings window."""
 import argparse
 import copy
+import json
 import logging
 import os
 import sys
 import threading
+import urllib.request
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QLineEdit,
@@ -22,6 +24,22 @@ from wow_diktate import (
 
 MODEL_SIZES = ["tiny", "base", "small", "medium", "large-v3"]
 LANGUAGES = ["auto", "en", "pt", "es", "de", "fr", "ru"]
+CURRENT_VERSION = "1.6"
+GITHUB_API = "https://api.github.com/repos/hellker/wow-diktate/releases/latest"
+
+
+def check_for_update():
+    """Check GitHub for a newer release. Returns new version string or None."""
+    try:
+        req = urllib.request.Request(GITHUB_API, headers={"User-Agent": "wow-diktate"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+        latest = data.get("tag_name", "").lstrip("v")
+        if latest and latest != CURRENT_VERSION:
+            return latest
+    except Exception:
+        pass
+    return None
 
 
 class DictationWorker(QThread):
@@ -276,11 +294,23 @@ class WowDiktateApp:
         self.worker = None
         self.settings_win = None
 
+        # Check for updates on startup (non-blocking, 2s delay)
+        QTimer.singleShot(2000, self._check_update)
+
     def _make_icon(self):
         icon_path = os.path.expanduser("~/.config/wow-diktate/icon.png")
         if os.path.exists(icon_path):
             return QIcon(icon_path)
         return QIcon()
+
+    def _check_update(self):
+        latest = check_for_update()
+        if latest:
+            self.tray.showMessage(
+                "WoW Diktate Update Available",
+                f"Version {latest} is available.\n"
+                f"Download: https://github.com/hellker/wow-diktate/releases",
+                QSystemTrayIcon.MessageIcon.Information, 10000)
 
     def _tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
