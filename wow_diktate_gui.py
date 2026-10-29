@@ -5,6 +5,8 @@ import copy
 import json
 import logging
 import os
+import pathlib
+import subprocess
 import sys
 import threading
 import urllib.request
@@ -24,8 +26,9 @@ from wow_diktate import (
 
 MODEL_SIZES = ["tiny", "base", "small", "medium", "large-v3"]
 LANGUAGES = ["auto", "en", "pt", "es", "de", "fr", "ru"]
-CURRENT_VERSION = "1.6.0"
+CURRENT_VERSION = "1.7.0"
 GITHUB_API = "https://api.github.com/repos/hellker/wow-diktate/releases/latest"
+GITHUB_RELEASES_URL = "https://github.com/hellker/wow-diktate/releases"
 
 
 def check_for_update():
@@ -40,6 +43,18 @@ def check_for_update():
     except Exception:
         pass
     return None
+
+
+def _download_file(url, dest):
+    """Download a file from URL to destination path."""
+    req = urllib.request.Request(url, headers={"User-Agent": "wow-diktate"})
+    with urllib.request.urlopen(req) as resp:
+        with open(dest, "wb") as f:
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                f.write(chunk)
 
 
 class DictationWorker(QThread):
@@ -120,7 +135,6 @@ class SettingsWindow(QMainWindow):
         row = QHBoxLayout()
         row.addWidget(QLabel("Silence threshold:"))
         self.threshold_spin = QDoubleSpinBox()
-        # Default is 2 decimals, which would silently round 0.005 to 0.01.
         self.threshold_spin.setDecimals(3)
         self.threshold_spin.setRange(0.001, 0.1)
         self.threshold_spin.setSingleStep(0.001)
@@ -146,7 +160,6 @@ class SettingsWindow(QMainWindow):
         self.model_combo = QComboBox()
         self.model_combo.addItems(MODEL_SIZES)
         if self.config["model"] not in MODEL_SIZES:
-            # Keep a hand-edited model instead of silently switching to "tiny".
             self.model_combo.addItem(self.config["model"])
         self.model_combo.setCurrentText(self.config["model"])
         row.addWidget(self.model_combo)
@@ -156,7 +169,7 @@ class SettingsWindow(QMainWindow):
         row = QHBoxLayout()
         row.addWidget(QLabel("Language you speak:"))
         self.language_combo = QComboBox()
-        self.language_combo.setEditable(True)  # any Whisper language code works
+        self.language_combo.setEditable(True)
         self.language_combo.addItems(LANGUAGES)
         self.language_combo.setCurrentText(self.config["language"])
         row.addWidget(self.language_combo)
@@ -190,7 +203,7 @@ class SettingsWindow(QMainWindow):
         add_btn = QPushButton("+")
         add_btn.setFixedWidth(36)
         add_btn.clicked.connect(self._add_channel)
-        rem_btn = QPushButton("−")
+        rem_btn = QPushButton("\u2212")
         rem_btn.setFixedWidth(36)
         rem_btn.clicked.connect(self._remove_channel)
         btn_row2.addWidget(add_btn)
@@ -273,15 +286,18 @@ class WowDiktateApp:
         self.dry_run_action = QAction("Test mode (don't type)", self.app)
         self.dry_run_action.setCheckable(True)
         self.dry_run_action.setChecked(dry_run)
+        self.update_action = QAction("Check for Updates", self.app)
+        self.update_action.triggered.connect(self._check_update_interactive)
         self.settings_action = QAction("Settings", self.app)
         self.settings_action.triggered.connect(self._open_settings)
         self.quit_action = QAction("Quit", self.app)
         self.quit_action.triggered.connect(self._quit)
 
-        # Keep a reference: the tray does not take ownership of the menu.
         self.menu = QMenu()
         self.menu.addAction(self.toggle_action)
         self.menu.addAction(self.dry_run_action)
+        self.menu.addSeparator()
+        self.menu.addAction(self.update_action)
         self.menu.addSeparator()
         self.menu.addAction(self.settings_action)
         self.menu.addSeparator()
@@ -294,8 +310,8 @@ class WowDiktateApp:
         self.worker = None
         self.settings_win = None
 
-        # Check for updates on startup (non-blocking, 2s delay)
-        QTimer.singleShot(2000, self._check_update)
+        # Passive update check on startup (non-blocking, 2s delay)
+        QTimer.singleShot(2000, self._check_update_passive)
 
     def _make_icon(self):
         icon_path = os.path.expanduser("~/.config/wow-diktate/icon.png")
@@ -303,14 +319,67 @@ class WowDiktateApp:
             return QIcon(icon_path)
         return QIcon()
 
-    def _check_update(self):
+    def _check_update_passive(self):
+        """Silent check on launch — just notifies if update available."""
         latest = check_for_update()
         if latest:
             self.tray.showMessage(
                 "WoW Diktate Update Available",
                 f"Version {latest} is available.\n"
-                f"Download: https://github.com/hellker/wow-diktate/releases",
+                f"Download: {GITHUB_RELEASES_URL}",
                 QSystemTrayIcon.MessageIcon.Information, 10000)
+
+    def _check_update_interactive(self):
+        """Check for updates, offer to download, replace, and restart."""
+        latest = check_for_update()
+        if not latest:
+            self.tray.showMessage("WoW Diktate", "You're on the latest version.",
+                                  QSystemTrayIcon.MessageIcon.Information, 3000)
+            return
+
+        reply = QMessageBox.question(
+            None, "Update Available",
+            f"Version {latest} is available.\n\n"
+            f"Download and replace current version?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Only works when running as an AppImage
+        current_path = pathlib.Path(sys.argv[0]).resolve()
+        if not current_path.name.endswith(".AppImage"):
+            self.tray.showMessage("WoW Diktate",
+                                  "Running from source, not an AppImage.\n"
+                                  f"Download manually: {GITHUB_RELEASES_URL}",
+                                  QSystemTrayIcon.MessageIcon.Information, 8000)
+            return
+
+        download_url = (
+            f"https://github.com/hellker/wow-diktate/releases/download/"
+            f"v{latest}/WoW_Diktate-x86_64_v{latest}.AppImage")
+
+        self.tray.showMessage("WoW Diktate", "Downloading update...",
+                              QSystemTrayIcon.MessageIcon.Information, 3000)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+
+        try:
+            tmp_path = str(current_path) + ".new"
+            _download_file(download_url, tmp_path)
+            os.chmod(tmp_path, 0o755)
+            os.replace(tmp_path, str(current_path))
+
+            self.tray.showMessage("WoW Diktate",
+                                  f"Updated to v{latest}!\nRelaunching...",
+                                  QSystemTrayIcon.MessageIcon.Information, 5000)
+
+            subprocess.Popen([str(current_path)])
+            self.app.quit()
+
+        except Exception as e:
+            self.tray.showMessage("WoW Diktate Update Failed", str(e)[:200],
+                                  QSystemTrayIcon.MessageIcon.Critical, 8000)
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def _tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -321,7 +390,6 @@ class WowDiktateApp:
 
     def _toggle(self):
         if self._busy():
-            # Ask the worker to stop; it reports back through result/error.
             self.worker.stop()
             self.tray.setToolTip("WoW Diktate (stopping...)")
             return
