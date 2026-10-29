@@ -276,20 +276,10 @@ class WowDiktateApp:
         self.settings_win = None
 
     def _make_icon(self):
-        pixmap = QPixmap(64, 64)
-        pixmap.fill(QColor(0, 0, 0, 0))
-        p = QPainter(pixmap)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setBrush(QColor("#8B4513"))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(22, 8, 20, 32, 10, 10)
-        p.drawRoundedRect(16, 36, 32, 8, 4, 4)
-        p.setPen(QColor("#8B4513"))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawLine(32, 44, 32, 56)
-        p.drawLine(20, 56, 44, 56)
-        p.end()
-        return QIcon(pixmap)
+        icon_path = os.path.expanduser("~/.config/wow-diktate/icon.png")
+        if os.path.exists(icon_path):
+            return QIcon(icon_path)
+        return QIcon()
 
     def _tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
