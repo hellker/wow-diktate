@@ -2,6 +2,7 @@
 """wow-diktate GUI — PyQt6 tray icon + settings window."""
 import argparse
 import copy
+import logging
 import sys
 import threading
 
@@ -14,11 +15,12 @@ from PyQt6.QtWidgets import (
 )
 
 from wow_diktate import (
-    get_model, load_config, normalize_config, parse_channel, record,
+    get_model, load_config, normalize_config, normalize_language, parse_channel, record,
     save_config, transcribe, type_and_send,
 )
 
 MODEL_SIZES = ["tiny", "base", "small", "medium", "large-v3"]
+LANGUAGES = ["auto", "en", "pt", "es", "de", "fr", "ru"]
 
 
 class DictationWorker(QThread):
@@ -40,8 +42,15 @@ class DictationWorker(QThread):
         try:
             self.status.emit("loading model...")
             get_model(self.config["model"])
+            if self._stop.is_set():
+                self.result.emit("")
+                return
             self.status.emit("listening...")
             audio = record(self.config, self._stop)
+            if self._stop.is_set():
+                self.result.emit("")
+                return
+            self.status.emit("transcribing...")
             text = transcribe(audio, self.config) if audio is not None else ""
             prefix, msg = parse_channel(
                 text, self.config["channels"], self.config["default_channel"])
@@ -50,7 +59,10 @@ class DictationWorker(QThread):
                 return
             full = prefix + msg
             if not self.dry_run:
-                type_and_send(full)
+                self.status.emit("sending...")
+                if not type_and_send(full, self._stop):
+                    self.result.emit("")
+                    return
             self.result.emit(full)
         except Exception as e:
             # Never let an exception escape a QThread/slot: PyQt aborts the app.
@@ -122,6 +134,16 @@ class SettingsWindow(QMainWindow):
         row.addStretch()
         layout.addLayout(row)
 
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Language you speak:"))
+        self.language_combo = QComboBox()
+        self.language_combo.setEditable(True)  # any Whisper language code works
+        self.language_combo.addItems(LANGUAGES)
+        self.language_combo.setCurrentText(self.config["language"])
+        row.addWidget(self.language_combo)
+        row.addStretch()
+        layout.addLayout(row)
+
         # --- Channel section ---
         layout.addWidget(QLabel("<b>Channels</b>"))
 
@@ -168,10 +190,17 @@ class SettingsWindow(QMainWindow):
         self.setCentralWidget(w)
 
     def _save(self):
+        try:
+            language = normalize_language(self.language_combo.currentText())
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid language", str(e))
+            self.language_combo.setFocus()
+            return
         self.config["gain"] = self.gain_slider.value() / 10
         self.config["silence_threshold"] = self.threshold_spin.value()
         self.config["silence_chunks"] = self.chunks_spin.value()
         self.config["model"] = self.model_combo.currentText()
+        self.config["language"] = language
         self.config["default_channel"] = self.default_ch_edit.text()
 
         channels = {}
@@ -286,7 +315,8 @@ class WowDiktateApp:
     def _on_result(self, text):
         self.tray.setToolTip("WoW Diktate")
         if not text:
-            self.tray.showMessage("WoW Diktate", "No speech detected",
+            message = "Dictation cancelled" if self.worker._stop.is_set() else "No speech detected"
+            self.tray.showMessage("WoW Diktate", message,
                                   QSystemTrayIcon.MessageIcon.Information, 2000)
         elif self.worker.dry_run:
             self.tray.showMessage("WoW Diktate (test mode)", f"Would send: {text}",
@@ -322,7 +352,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dry-run", action="store_true",
                         help="start in test mode: show the message instead of typing it")
+    parser.add_argument("--verbose", action="store_true",
+                        help="print timings and ydotool details to the terminal")
     args, qt_args = parser.parse_known_args()
+    if args.verbose:
+        logging.basicConfig(format="wow-diktate: %(message)s")
+        logging.getLogger("wow_diktate").setLevel(logging.INFO)
     app = WowDiktateApp([sys.argv[0], *qt_args], dry_run=args.dry_run)
     return app.app.exec()
 
