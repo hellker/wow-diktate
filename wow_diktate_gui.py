@@ -24,7 +24,7 @@ from wow_diktate import (
 
 MODEL_SIZES = ["tiny", "base", "small", "medium", "large-v3"]
 LANGUAGES = ["auto", "en", "pt", "es", "de", "fr", "ru"]
-CURRENT_VERSION = "1.6"
+CURRENT_VERSION = "1.6.0"
 GITHUB_API = "https://api.github.com/repos/hellker/wow-diktate/releases/latest"
 
 
